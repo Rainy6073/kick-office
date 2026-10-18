@@ -1,5 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { pdfjs, type HighlightSegment, type PDFDoc } from './pdf'
+import { registerTextLayer } from './textSelection'
+
+/** Where a link in the PDF goes: another place in the document, or a web address. */
+export type PdfLinkTarget = { dest: unknown } | { url: string }
 
 interface Props {
   doc: PDFDoc
@@ -15,11 +19,16 @@ interface Props {
   /** Notes shown in the margin beside the page, next to their highlighted text. */
   asides?: { id: string; text: string }[]
   onAside?: (id: string, rect: DOMRect) => void
+  /** Called when a link inside the document (e.g. on the contents page) is clicked. */
+  onLink?: (dest: unknown) => void
 }
 
 const EMPTY: HighlightSegment[] = []
 
-export default function PdfPage({ doc, pageNumber, scale, baseSize, highlights = EMPTY, scrollRequest = 0, flash, asides, onAside }: Props) {
+export default function PdfPage({ doc, pageNumber, scale, baseSize, highlights = EMPTY, scrollRequest = 0, flash, asides, onAside, onLink }: Props) {
+  const linkRef = useRef<HTMLDivElement>(null)
+  const onLinkRef = useRef(onLink)
+  onLinkRef.current = onLink
   // Where each margin note's highlight sits on the page, in pixels from the top.
   const [asideTops, setAsideTops] = useState<Map<string, number>>(new Map())
   const asideRef = useRef<HTMLDivElement>(null)
@@ -50,6 +59,7 @@ export default function PdfPage({ doc, pageNumber, scale, baseSize, highlights =
     let cancelled = false
     let renderTask: ReturnType<pdfjs.PDFPageProxy['render']> | null = null
     let textLayer: pdfjs.TextLayer | null = null
+    let forgetLayer: (() => void) | null = null
 
     const run = async () => {
       const page = await doc.getPage(pageNumber)
@@ -89,7 +99,41 @@ export default function PdfPage({ doc, pageNumber, scale, baseSize, highlights =
       }
       if (cancelled || !textRef.current) return
       textRef.current.replaceChildren(container)
+      forgetLayer = registerTextLayer(container)
       setTextDivs({ divs: textLayer.textDivs, strs: textLayer.textContentItemsStr })
+
+      // Links (e.g. the contents page's entries): clickable boxes over the page.
+      const annotations = await page.getAnnotations({ intent: 'display' })
+      if (cancelled || !linkRef.current) return
+      const links: HTMLElement[] = []
+      for (const a of annotations) {
+        if (a.subtype !== 'Link' || (!a.dest && !a.url)) continue
+        const [x1, y1] = viewport.convertToViewportPoint(a.rect[0], a.rect[1])
+        const [x2, y2] = viewport.convertToViewportPoint(a.rect[2], a.rect[3])
+        const link = document.createElement('a')
+        link.className = 'pdf-link'
+        Object.assign(link.style, {
+          left: `${Math.min(x1, x2)}px`,
+          top: `${Math.min(y1, y2)}px`,
+          width: `${Math.abs(x2 - x1)}px`,
+          height: `${Math.abs(y2 - y1)}px`,
+        })
+        if (a.url) {
+          link.href = a.url
+          link.target = '_blank'
+          link.rel = 'noopener noreferrer'
+          link.title = a.url
+        } else {
+          link.href = '#'
+          link.title = 'Go to this section'
+          link.addEventListener('click', (e) => {
+            e.preventDefault()
+            onLinkRef.current?.(a.dest)
+          })
+        }
+        links.push(link)
+      }
+      linkRef.current.replaceChildren(...links)
     }
 
     // Re-renders caused by zooming are debounced so pinch gestures stay smooth;
@@ -102,6 +146,7 @@ export default function PdfPage({ doc, pageNumber, scale, baseSize, highlights =
       clearTimeout(timer)
       renderTask?.cancel()
       textLayer?.cancel()
+      forgetLayer?.()
     }
   }, [doc, pageNumber, scale, visible])
 
@@ -200,6 +245,7 @@ export default function PdfPage({ doc, pageNumber, scale, baseSize, highlights =
         <>
           <div ref={canvasHostRef} className="canvas-host" />
           <div ref={textRef} className="text-host" />
+          <div ref={linkRef} className="link-host" />
         </>
       )}
       {shownAsides.length > 0 && (

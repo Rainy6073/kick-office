@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import ConfirmButton from '../components/ConfirmButton'
 import { followPointer } from '../drag'
 import { isPasswordError, loadPdf, type PDFDoc } from '../reader/pdf'
@@ -6,8 +6,9 @@ import { useLocalState } from '../session'
 import { resolveFileUrl, useDoc } from '../sync/store'
 import { newId } from '../types'
 import CropEditor from './CropEditor'
-import { renderRegion, type Box } from './fieldExtract'
+import { renderRegion } from './fieldExtract'
 import { removeLocalFile, saveLocalFile, useLocalFileUrl } from './localFiles'
+import ScrollCrop, { type PagePick } from './ScrollCrop'
 
 /** One picture on the board; x, y and w are in board pixels (height follows the picture). */
 interface RefItem {
@@ -275,13 +276,22 @@ function RefCard({
   )
 }
 
-/** Picks part of a page of the shared manual to clip onto the board. */
+/**
+ * Picks part of a page of the shared manual to clip onto the board: scroll through
+ * the manual and drag a box on any page (or click a page to take all of it).
+ */
 function ClipPicker({ onClose, onClip }: { onClose: () => void; onClip: (blob: Blob, page: number) => Promise<void> | void }) {
   const manual = useDoc('meta', 'manual')
   const [doc, setDoc] = useState<PDFDoc | null>(null)
+  const [sizes, setSizes] = useState<{ width: number; height: number }[]>([])
   const [status, setStatus] = useState<string | null>('Opening the manual…')
-  const [page, setPage] = useLocalState('kickoff.refClipPage', 1)
-  const [box, setBox] = useState<Box | null>(null)
+  const [lastPage, setLastPage] = useLocalState('kickoff.refClipPage', 1)
+  const [pageInView, setPageInView] = useState(lastPage)
+  const [pick, setPick] = useState<PagePick | null>(null)
+  // On a touch screen a finger scrolls, so a page is opened on its own to select on it.
+  const touch = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
+  const [single, setSingle] = useState<number | null>(null)
+  const [jump, setJump] = useState<{ page: number; token: number } | undefined>()
   const [busy, setBusy] = useState(false)
   const [added, setAdded] = useState(0)
 
@@ -294,9 +304,15 @@ function ClipPicker({ onClose, onClip }: { onClose: () => void; onClip: (blob: B
     ;(async () => {
       try {
         const d = await loadPdf(await resolveFileUrl(manual.url), manual.password)
+        const all = await Promise.all(
+          Array.from({ length: d.numPages }, async (_, i) => {
+            const vp = (await d.getPage(i + 1)).getViewport({ scale: 1 })
+            return { width: vp.width, height: vp.height }
+          }),
+        )
         if (cancelled) return
+        setSizes(all)
         setDoc(d)
-        setPage((p) => Math.min(d.numPages, Math.max(1, p)))
         setStatus(null)
       } catch (err) {
         if (!cancelled) setStatus(isPasswordError(err) ? 'The manual is still locked. Unlock it on the Game Manual page first.' : 'Could not open the manual.')
@@ -308,51 +324,107 @@ function ClipPicker({ onClose, onClip }: { onClose: () => void; onClip: (blob: B
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [manual?.url, manual?.password])
 
+  const onPageInView = useCallback(
+    (page: number) => {
+      setPageInView(page)
+      setLastPage(page)
+    },
+    [setLastPage],
+  )
+
   const clip = async () => {
-    if (!doc) return
+    if (!doc || !pick) return
     setBusy(true)
     try {
-      await onClip(await renderRegion(doc, page, box, 1600), page)
+      await onClip(await renderRegion(doc, pick.page, pick.box, 1600), pick.page)
       setAdded((n) => n + 1)
-      setBox(null)
+      setPick(null)
     } finally {
       setBusy(false)
     }
   }
 
+  const startPage = Math.min(Math.max(1, lastPage), Math.max(1, sizes.length))
   return (
     <div className="modal-backdrop" onClick={() => !busy && onClose()}>
-      <div className="modal field-picker" onClick={(e) => e.stopPropagation()}>
+      <div className="modal field-picker clip-picker" onClick={(e) => e.stopPropagation()}>
         <header className="row">
           <h3>Clip from the manual</h3>
           <span className="muted small">{manual?.name}</span>
           <span style={{ flex: 1 }} />
+          {doc && single == null && (
+            <span className="small crop-page">
+              Page{' '}
+              <input
+                key={pageInView}
+                defaultValue={pageInView}
+                inputMode="numeric"
+                aria-label="Go to page"
+                onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+                onBlur={(e) => {
+                  const n = Math.min(sizes.length, Math.max(1, parseInt(e.target.value, 10) || pageInView))
+                  if (n !== pageInView) setJump({ page: n, token: Date.now() })
+                  else e.target.value = String(pageInView)
+                }}
+              />{' '}
+              / {sizes.length}
+            </span>
+          )}
           <button className="icon ghost" onClick={onClose} aria-label="Close" disabled={busy}>
             ✕
           </button>
         </header>
         {status && <p className="muted">{status}</p>}
-        {doc && (
-          <CropEditor
-            key={page}
-            doc={doc}
-            page={page}
-            box={box}
-            onBox={setBox}
-            onPage={(p) => {
-              setPage(p)
-              setBox(null)
-            }}
-            what="what to clip (or keep the whole page)"
-          />
+        {doc && single != null && (
+          <>
+            <button className="small clip-back" onClick={() => setSingle(null)}>
+              ← All pages
+            </button>
+            <CropEditor
+              key={single}
+              doc={doc}
+              page={single}
+              box={pick?.page === single ? pick.box : null}
+              onBox={(box) => setPick({ page: single, box })}
+              onPage={(p) => {
+                setSingle(p)
+                setPick({ page: p, box: null })
+              }}
+              what="what to clip (or keep the whole page)"
+            />
+          </>
+        )}
+        {doc && single == null && (
+          <>
+            <p className="muted small clip-hint">
+              {touch ? 'Scroll to the page you want, then tap “Select on this page”.' : 'Scroll through the manual and drag a box around what you want, or click a page to take all of it.'}
+            </p>
+            <ScrollCrop
+              doc={doc}
+              sizes={sizes}
+              pick={pick}
+              onPick={setPick}
+              startPage={startPage}
+              onPageInView={onPageInView}
+              jump={jump}
+              onSelectOnPage={
+                touch
+                  ? (p) => {
+                      setSingle(p)
+                      setPick({ page: p, box: null })
+                    }
+                  : undefined
+              }
+            />
+          </>
         )}
         <footer className="row end">
           {added > 0 && <span className="muted small">Added {added} ✓ Keep clipping, or close when done.</span>}
           <button onClick={onClose} disabled={busy}>
             {added > 0 ? 'Done' : 'Cancel'}
           </button>
-          <button className="primary" onClick={clip} disabled={busy || !doc}>
-            {busy ? 'Adding…' : box ? 'Add clip to board' : 'Add whole page'}
+          <button className="primary" onClick={clip} disabled={busy || !pick}>
+            {busy ? 'Adding…' : !pick ? 'Select something to clip' : pick.box ? `Add clip from page ${pick.page}` : `Add page ${pick.page}`}
           </button>
         </footer>
       </div>

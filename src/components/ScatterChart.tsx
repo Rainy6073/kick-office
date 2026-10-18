@@ -114,6 +114,8 @@ export default function ScatterChart({ abilities, highlight, onHighlight, onRate
   const maxUsed = Math.max(0, ...plotted.flatMap((a) => [a.effort!, a.value!]), ...(proposal ? [proposal.effort ?? 0, proposal.value ?? 0] : []))
   const top = FIB.find((f) => f > maxUsed) ?? FIB[FIB.length - 1]
   const scaleTop = Math.max(21, top)
+  // The shading covers 0 to just past the highest rating in use (at least 3).
+  const colorTop = Math.max(3, top)
   const step = niceStep(scaleTop)
   const domain = Math.ceil(scaleTop / step) * step
 
@@ -386,16 +388,27 @@ export default function ScatterChart({ abilities, highlight, onHighlight, onRate
           {/* Low effort & high value (top left) shades green, high effort & low value
               (bottom right) red, each fading to white toward the middle. */}
           <defs>
-            {/* Glows from three corners that fade out across the whole chart:
-                green (quick wins), yellow (big bets) and red (money pits). */}
+            {/* Glows from three corners of the ratings in use (0 to colorTop on each
+                axis), fading out smoothly: green (quick wins: low effort, high value),
+                yellow (big bets) and red (money pits). Placed in screen units so
+                they follow the zoom. */}
             {(
               [
-                ['ev-good', '#18a058', 0, 0, 0.55],
-                ['ev-bet', '#f2b705', 1, 0, 0.5],
-                ['ev-bad', '#d0101b', 1, 1, 0.45],
+                ['ev-good', '#18a058', 0, colorTop, 0.55],
+                ['ev-bet', '#f2b705', colorTop, colorTop, 0.5],
+                ['ev-bad', '#d0101b', colorTop, 0, 0.45],
               ] as const
-            ).map(([id, color, cx, cy, strength]) => (
-              <radialGradient key={id} id={id} cx={cx} cy={cy} r="1" fx={cx} fy={cy}>
+            ).map(([id, color, e, v, strength]) => (
+              <radialGradient
+                key={id}
+                id={id}
+                gradientUnits="userSpaceOnUse"
+                cx={x(e)}
+                cy={y(v)}
+                fx={x(e)}
+                fy={y(v)}
+                r={Math.max(x(colorTop) - x(0), y(0) - y(colorTop))}
+              >
                 <stop offset="0" stopColor={color} stopOpacity={strength} />
                 <stop offset="0.45" stopColor={color} stopOpacity={strength * 0.4} />
                 <stop offset="0.85" stopColor={color} stopOpacity="0" />
@@ -422,6 +435,8 @@ export default function ScatterChart({ abilities, highlight, onHighlight, onRate
           />
           <g clipPath="url(#ev-plot)">
             {/* The shading is placed in rating units, so it moves with the zoom. */}
+            {/* The shading is sized to the ratings in use (up to the next Fibonacci
+                step), so a chart of small ratings is coloured around them. */}
             {['ev-good', 'ev-bet', 'ev-bad'].map((id) => (
               <rect key={id} x={x(0)} y={y(domain)} width={x(domain) - x(0)} height={y(0) - y(domain)} fill={`url(#${id})`} pointerEvents="none" />
             ))}
@@ -456,17 +471,11 @@ export default function ScatterChart({ abilities, highlight, onHighlight, onRate
             (() => {
               const endE = slope <= 1 ? domain : domain / slope
               const endV = slope <= 1 ? domain * slope : domain
-              // The label sits along the line, near the far edge of what's in view.
-              const t = Math.min(1, Math.max(0.15, Math.min((view.x0 + view.span * 0.85) / endE, (view.y0 + view.span * 0.85) / endV)))
-              const lx = x(endE * t)
-              const ly = y(endV * t)
-              const angle = (Math.atan2(y(endV) - y(0), x(endE) - x(0)) * 180) / Math.PI
               return (
                 <g className="fit">
-                  <line className="fit-line" x1={x(0)} y1={y(0)} x2={x(endE)} y2={y(endV)} />
-                  <text className="fit-label" x={lx} y={ly - 8} textAnchor="end" transform={`rotate(${angle} ${lx} ${ly})`}>
-                    Best fit: V ≈ {slope >= 10 ? Math.round(slope) : slope.toFixed(2).replace(/0$/, '')} × E
-                  </text>
+                  <line className="fit-line" x1={x(0)} y1={y(0)} x2={x(endE)} y2={y(endV)}>
+                    <title>Best fit through (0, 0): value ≈ {slope.toFixed(2)} × effort</title>
+                  </line>
                 </g>
               )
             })()}

@@ -430,6 +430,37 @@ export default function ManualReader({ source, empty, actions, onReference, jump
     if (el) viewerRef.current!.scrollTo({ top: el.offsetTop - 16 })
   }, [])
 
+  /** Follows a link inside the PDF (e.g. a contents entry) to its page and spot. */
+  const followLink = useCallback(
+    async (dest: unknown) => {
+      if (!loaded) return
+      try {
+        const explicit = (typeof dest === 'string' ? await loaded.doc.getDestination(dest) : dest) as unknown[] | null
+        if (!Array.isArray(explicit) || explicit[0] == null) return
+        const ref = explicit[0]
+        const index = typeof ref === 'number' ? ref : await loaded.doc.getPageIndex(ref as Parameters<PDFDoc['getPageIndex']>[0])
+        const page = index + 1
+        // "XYZ left top zoom" and "FitH top" destinations give a spot on the page.
+        const kind = (explicit[1] as { name?: string } | undefined)?.name
+        const top = kind === 'XYZ' ? explicit[3] : kind === 'FitH' || kind === 'FitBH' ? explicit[2] : null
+        const y = typeof top === 'number' ? top : undefined
+        const viewer = viewerRef.current
+        const el = viewer?.querySelector<HTMLElement>(`[data-page="${page}"]`)
+        if (!viewer || !el || element || focused) {
+          // The page isn't shown (a game-element filter is on): show the whole manual there.
+          openPageFromFocus(page, y)
+          return
+        }
+        const offset = y != null ? (loaded.sizes[page - 1].height - y) * scaleRef.current - 40 : -16
+        viewer.scrollTo({ top: el.offsetTop + Math.max(-16, offset) })
+        if (y != null) setFlash({ page, y, token: Date.now() })
+      } catch (err) {
+        console.warn('Could not follow that link', err)
+      }
+    },
+    [loaded, element, focused, openPageFromFocus],
+  )
+
   // Keep the current page in sync with scroll position.
   useEffect(() => {
     const viewer = viewerRef.current
@@ -1103,6 +1134,7 @@ export default function ManualReader({ source, empty, actions, onReference, jump
                 flash={flash?.page === page ? flash : undefined}
                 asides={notesByPage.get(page)}
                 onAside={onOpenNote && ((id, rect) => onOpenNote(id, { x: rect.left + rect.width / 2, y: rect.bottom + 8 }))}
+                onLink={followLink}
               />
             ))}
         </main>
