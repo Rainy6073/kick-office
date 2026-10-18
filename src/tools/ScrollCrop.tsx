@@ -151,7 +151,11 @@ function ClipPage({
         // A finger drag scrolls; mouse and pen drags select.
         if (e.pointerType === 'touch' || e.button !== 0) return
         e.preventDefault()
-        e.currentTarget.setPointerCapture(e.pointerId)
+        try {
+          e.currentTarget.setPointerCapture(e.pointerId)
+        } catch {
+          // Capture is best-effort; selecting still works without it.
+        }
         startRef.current = point(e)
         setDrag({ ...startRef.current, w: 0, h: 0 })
       }}
