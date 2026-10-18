@@ -23,6 +23,7 @@ async function run<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRe
 
 export const saveLocalFile = (key: string, blob: Blob) => run('readwrite', (s) => s.put(blob, key))
 export const loadLocalFile = (key: string) => run<Blob | undefined>('readonly', (s) => s.get(key))
+export const removeLocalFile = (key: string) => run('readwrite', (s) => s.delete(key))
 
 /** An object URL for a locally stored file. */
 export function useLocalFileUrl(key: string | undefined) {

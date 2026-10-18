@@ -8,6 +8,7 @@ import { DropList, Sortable } from '../components/Sortable'
 import { useLiveSort } from '../liveSort'
 import { byRank, cardsFirst, placeSubmission, useCardSensors } from '../reorder'
 import SubmissionCard from '../components/SubmissionCard'
+import { followPointer } from '../drag'
 import ManualReader, { type ManualRef, type ManualSource } from '../reader/ManualReader'
 import { isPasswordError, loadPdf } from '../reader/pdf'
 import { useIsPresenter, useLocalState, useSession } from '../session'
@@ -102,14 +103,10 @@ export default function ManualPage() {
   }, [setSideCollapsed])
 
   const startResize = (e: React.PointerEvent<HTMLDivElement>) => {
-    e.preventDefault()
-    const handle = e.currentTarget
-    handle.setPointerCapture(e.pointerId)
     const { left, right } = pageRef.current!.getBoundingClientRect()
-    document.body.classList.add('resizing')
     // Collapsing by dragging keeps the width the panel had before, for reopening.
     const startWidth = sideWidth
-    const move = (ev: PointerEvent) => {
+    followPointer(e, (ev) => {
       const width = ev.clientX - left
       if (width < COLLAPSE_AT) {
         setSideCollapsed(true)
@@ -124,16 +121,7 @@ export default function ManualPage() {
         setBoardOpen(false)
         setSideWidth(Math.min(maxSide(), Math.max(MIN_SIDE, Math.round(width))))
       }
-    }
-    const up = () => {
-      document.body.classList.remove('resizing')
-      handle.removeEventListener('pointermove', move)
-      handle.removeEventListener('pointerup', up)
-      handle.removeEventListener('pointercancel', up)
-    }
-    handle.addEventListener('pointermove', move)
-    handle.addEventListener('pointerup', up)
-    handle.addEventListener('pointercancel', up)
+    })
   }
 
   // Whoever types the right passcode unlocks the shared manual for everyone:

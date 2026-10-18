@@ -15,9 +15,9 @@ import './App.css'
 const PAGES = [
   { path: 'manual', label: 'Game Manual', short: 'Manual' },
   { path: 'effort-value', label: 'Effort / Value', short: 'E/V' },
+  { path: 'prototypes', label: 'Prototypes', short: 'Prototypes' },
   { path: 'archetypes', label: 'Archetypes', short: 'Archetypes' },
   { path: 'nwh', label: 'NWH', short: 'NWH', title: 'Needs, Wants & Nice to Haves' },
-  { path: 'prototypes', label: 'Prototypes', short: 'Prototypes' },
   { path: 'tools', label: 'Tools', short: 'Tools' },
 ] as const
 

@@ -11,7 +11,8 @@ import {
 } from '@dnd-kit/core'
 import { horizontalListSortingStrategy, SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
+import ResizeHandle from '../components/ResizeHandle'
 import { DropList, Sortable } from '../components/Sortable'
 import { useLiveSort } from '../liveSort'
 import { formatRatio, ratioTone, valuePerEffort } from '../ratio'
@@ -71,6 +72,9 @@ export default function ArchetypesPage() {
   const columns = useMemo(() => [...board.archetypes].sort((a, b) => rankOf(a) - rankOf(b)), [board.archetypes])
 
   const sensors = useCardSensors()
+  // The ability list's width, set with the bar beside it (per device).
+  const [paletteWidth, setPaletteWidth] = useLocalState('kickoff.archPaletteWidth', 250)
+  const bodyRef = useRef<HTMLDivElement>(null)
 
   /** The archetype a card is on, and the card. */
   const findCard = (key: string) => {
@@ -223,8 +227,19 @@ export default function ArchetypesPage() {
       </header>
 
       <DndContext sensors={sensors} collisionDetection={collision} {...handlers}>
-        <div className="arch-body">
+        <div className="arch-body" ref={bodyRef} style={{ '--palette-w': `${paletteWidth}px` } as React.CSSProperties}>
           {board.editable && <Palette abilities={sortedAbilities} editable />}
+          {board.editable && (
+            <ResizeHandle
+              value={paletteWidth}
+              onChange={setPaletteWidth}
+              from={bodyRef}
+              min={180}
+              max={() => (bodyRef.current?.clientWidth ?? 1200) - 300}
+              reset={250}
+              label="Resize the ability list"
+            />
+          )}
           <div className="columns">
             <SortableContext items={columns.map((a) => ARCH + a.id)} strategy={horizontalListSortingStrategy}>
               {columns.map((a) => (

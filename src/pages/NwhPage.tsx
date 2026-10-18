@@ -1,6 +1,7 @@
 import { DndContext, DragOverlay } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
-import { useMemo } from 'react'
+import { useMemo, useRef } from 'react'
+import ResizeHandle from '../components/ResizeHandle'
 import { DropList, Sortable } from '../components/Sortable'
 import { useLiveSort } from '../liveSort'
 import { cardsFirst, useCardSensors } from '../reorder'
@@ -43,6 +44,9 @@ export default function NwhPage() {
   const unsorted = sorted.filter((a) => !placed.has(a.id))
 
   const sensors = useCardSensors()
+  // The Unsorted list's width, set with the bar beside it (per device).
+  const [paletteWidth, setPaletteWidth] = useLocalState('kickoff.nwhPaletteWidth', 250)
+  const bodyRef = useRef<HTMLDivElement>(null)
 
   const move = (abilityId: string, target: Target) => {
     const next: Priorities = { ...board, needs: [...board.needs], wants: [...board.wants], nice: [...board.nice] }
@@ -100,7 +104,7 @@ export default function NwhPage() {
       </header>
 
       <DndContext sensors={sensors} collisionDetection={cardsFirst} {...live.handlers}>
-        <div className="arch-body">
+        <div className="arch-body" ref={bodyRef} style={{ '--palette-w': `${paletteWidth}px` } as React.CSSProperties}>
           {editable && (
             <DropList group="unsorted" enabled as="aside" className="palette">
               <h3>
@@ -114,6 +118,17 @@ export default function NwhPage() {
                 ))}
               </SortableContext>
             </DropList>
+          )}
+          {editable && (
+            <ResizeHandle
+              value={paletteWidth}
+              onChange={setPaletteWidth}
+              from={bodyRef}
+              min={180}
+              max={() => (bodyRef.current?.clientWidth ?? 1200) - 300}
+              reset={250}
+              label="Resize the Unsorted list"
+            />
           )}
           <div className="columns nwh-columns">
             {TIERS.map((t) => {

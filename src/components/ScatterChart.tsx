@@ -127,6 +127,10 @@ export default function ScatterChart({ abilities, highlight, onHighlight, onRate
   const xTicks = ticksFor(view.x0, view.x0 + view.span)
   const yTicks = ticksFor(view.y0, view.y0 + view.span)
 
+  // Best-fit line through (0, 0): value ≈ slope × effort (least squares).
+  const fitSums = plotted.reduce((acc, a) => ({ ev: acc.ev + a.effort! * a.value!, ee: acc.ee + a.effort! * a.effort! }), { ev: 0, ee: 0 })
+  const slope = plotted.length && fitSums.ee > 0 ? fitSums.ev / fitSums.ee : null
+
   const plotW = size.width - LEFT - RIGHT
   const plotH = size.height - TOP - BOTTOM
   const x = (v: number) => LEFT + ((v - view.x0) / view.span) * plotW
@@ -447,6 +451,26 @@ export default function ScatterChart({ abilities, highlight, onHighlight, onRate
           </text>
 
           <g clipPath="url(#ev-plot)">
+          {/* The best-fit line, from (0, 0) to where it leaves the chart. */}
+          {slope != null &&
+            (() => {
+              const endE = slope <= 1 ? domain : domain / slope
+              const endV = slope <= 1 ? domain * slope : domain
+              // The label sits along the line, near the far edge of what's in view.
+              const t = Math.min(1, Math.max(0.15, Math.min((view.x0 + view.span * 0.85) / endE, (view.y0 + view.span * 0.85) / endV)))
+              const lx = x(endE * t)
+              const ly = y(endV * t)
+              const angle = (Math.atan2(y(endV) - y(0), x(endE) - x(0)) * 180) / Math.PI
+              return (
+                <g className="fit">
+                  <line className="fit-line" x1={x(0)} y1={y(0)} x2={x(endE)} y2={y(endV)} />
+                  <text className="fit-label" x={lx} y={ly - 8} textAnchor="end" transform={`rotate(${angle} ${lx} ${ly})`}>
+                    Best fit: V ≈ {slope >= 10 ? Math.round(slope) : slope.toFixed(2).replace(/0$/, '')} × E
+                  </text>
+                </g>
+              )
+            })()}
+
           {/* Leader lines for names that had to move away from their marker */}
           {groups.map((g) => {
             const p = placements.get(g.key)

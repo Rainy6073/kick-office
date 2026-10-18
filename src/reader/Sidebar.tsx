@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { GameElement, OutlineItem } from './pdf'
+import { followPointer } from '../drag'
 
 const SPLIT_KEY = 'gmr.sidebarSplit'
 
@@ -38,23 +39,15 @@ export default function Sidebar(props: Props) {
     }
   }, [split])
 
-  const startDrag = (e: React.PointerEvent<HTMLDivElement>) => {
-    e.preventDefault()
-    const handle = e.currentTarget
-    handle.setPointerCapture(e.pointerId)
-    const move = (ev: PointerEvent) => {
-      const rect = asideRef.current!.getBoundingClientRect()
-      setSplit(Math.min(0.9, Math.max(0.1, (ev.clientY - rect.top) / rect.height)))
-    }
-    const up = () => {
-      handle.removeEventListener('pointermove', move)
-      handle.removeEventListener('pointerup', up)
-      handle.removeEventListener('pointercancel', up)
-    }
-    handle.addEventListener('pointermove', move)
-    handle.addEventListener('pointerup', up)
-    handle.addEventListener('pointercancel', up)
-  }
+  const startDrag = (e: React.PointerEvent<HTMLDivElement>) =>
+    followPointer(
+      e,
+      (ev) => {
+        const rect = asideRef.current!.getBoundingClientRect()
+        setSplit(Math.min(0.9, Math.max(0.1, (ev.clientY - rect.top) / rect.height)))
+      },
+      { cursor: 'row-resize' },
+    )
 
   const nudge = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowUp') setSplit((s) => Math.max(0.1, s - 0.05))

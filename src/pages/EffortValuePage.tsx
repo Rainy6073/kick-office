@@ -6,6 +6,7 @@ import ConfirmButton from '../components/ConfirmButton'
 import FibInput from '../components/FibInput'
 import ScatterChart from '../components/ScatterChart'
 import { FIB } from '../fib'
+import { followPointer } from '../drag'
 import { useLiveSort } from '../liveSort'
 import { formatRatio, ratioTone, valuePerEffort } from '../ratio'
 import { cardsFirst, useCardSensors } from '../reorder'
@@ -45,21 +46,8 @@ export default function EffortValuePage() {
   const pageRef = useRef<HTMLDivElement>(null)
   const clampWidth = (w: number) => Math.round(Math.max(300, Math.min(w, (pageRef.current?.clientWidth ?? 1200) - 340)))
   const startResize = (e: React.PointerEvent<HTMLDivElement>) => {
-    e.preventDefault()
-    const handle = e.currentTarget
-    handle.setPointerCapture(e.pointerId)
     const left = pageRef.current!.getBoundingClientRect().left
-    document.body.classList.add('resizing')
-    const move = (ev: PointerEvent) => setListWidth(clampWidth(ev.clientX - left))
-    const up = () => {
-      document.body.classList.remove('resizing')
-      handle.removeEventListener('pointermove', move)
-      handle.removeEventListener('pointerup', up)
-      handle.removeEventListener('pointercancel', up)
-    }
-    handle.addEventListener('pointermove', move)
-    handle.addEventListener('pointerup', up)
-    handle.addEventListener('pointercancel', up)
+    followPointer(e, (ev) => setListWidth(clampWidth(ev.clientX - left)))
   }
   const [highlight, setHighlight] = useState<string | null>(null)
   const sorted = useMemo(() => [...abilities].sort((a, b) => rankOf(a) - rankOf(b)), [abilities])
