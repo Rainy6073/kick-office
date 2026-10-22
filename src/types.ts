@@ -53,6 +53,48 @@ export interface Proposal {
   createdAt: number
 }
 
+/** The two halves of the Effort / Value page while it is split into teams. */
+export type Team = 'effort' | 'value'
+
+/**
+ * The Effort / Value page's team split (one record, id "state"). While active,
+ * each team rates only its own number; merging writes both into the abilities.
+ */
+export interface EvSplit {
+  id: 'state'
+  active: boolean
+  /** Device ids of standard viewers the presenter lets edit their team's ratings. */
+  editors: string[]
+  startedAt: number
+  /** When the teams were last merged back together. */
+  mergedAt?: number
+}
+
+/** Someone's place on a team; only the presenter can remove it. Keyed by device id. */
+export interface TeamMember {
+  id: string
+  name: string
+  team: Team
+  joinedAt: number
+}
+
+/** A team's rating for an ability while split; id is `${team}:${abilityId}`. */
+export interface TeamRating {
+  id: string
+  abilityId: string
+  team: Team
+  rating: number | null
+}
+
+/** A device that has the app open, refreshed every little while. Keyed by device id. */
+export interface Presence {
+  id: string
+  name: string
+  role: Role
+  page: string
+  seenAt: number
+}
+
 export interface ArchetypeItem {
   /** Unique per card, since the same ability can appear many times. */
   key: string
@@ -182,6 +224,10 @@ export interface Collections {
   proposals: Proposal
   meta: ManualMeta
   priorities: Priorities
+  evSplit: EvSplit
+  teamMembers: TeamMember
+  teamRatings: TeamRating
+  presence: Presence
 }
 
 export type CollectionName = keyof Collections

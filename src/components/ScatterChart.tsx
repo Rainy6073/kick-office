@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { FIB } from '../fib'
+import { colorRange, useTween } from '../range'
 import { useIsPresenter } from '../session'
 import type { Ability } from '../types'
 
@@ -17,6 +18,8 @@ interface Props {
   onPick?: (id: string) => void
   /** Undo / redo buttons for rating changes, shown with the zoom buttons. */
   onUndo?: { undo: () => void; redo: () => void; canUndo: boolean; canRedo: boolean }
+  /** Points pop in one after another (after the teams merge). */
+  entering?: boolean
 }
 
 const PROPOSAL = '__proposal'
@@ -89,7 +92,7 @@ function textWidth(text: string, font: string) {
  * placed where it doesn't cover other names or markers (with a leader line when it
  * has to move away from its marker).
  */
-export default function ScatterChart({ abilities, highlight, onHighlight, onRate, proposal, onPropose, onPick, onUndo }: Props) {
+export default function ScatterChart({ abilities, highlight, onHighlight, onRate, proposal, onPropose, onPick, onUndo, entering }: Props) {
   const boxRef = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState({ width: 600, height: 400 })
   const presenter = useIsPresenter()
@@ -108,14 +111,16 @@ export default function ScatterChart({ abilities, highlight, onHighlight, onRate
 
   const plotted = abilities.filter((a) => a.effort != null && a.value != null)
   const unplotted = abilities.filter((a) => a.effort == null || a.value == null)
-  // Show the scale up to at least 13, or further when something is rated higher.
-  // Show the scale one Fibonacci step past the highest rating in use (at least 21),
-  // so there is always room to drag a point higher.
-  const maxUsed = Math.max(0, ...plotted.flatMap((a) => [a.effort!, a.value!]), ...(proposal ? [proposal.effort ?? 0, proposal.value ?? 0] : []))
+  // The shading reaches just past the highest rating in use (about 60 with nothing
+  // rated), growing and shrinking smoothly as ratings change. The scale goes one
+  // Fibonacci step past the highest rating (at least 21, and at least as far as
+  // the shading), so there is always room to drag a point higher.
+  const used = [...plotted.flatMap((a) => [a.effort!, a.value!]), ...(proposal?.effort != null && proposal.value != null ? [proposal.effort, proposal.value] : [])]
+  const maxUsed = Math.max(0, ...used)
   const top = FIB.find((f) => f > maxUsed) ?? FIB[FIB.length - 1]
-  const scaleTop = Math.max(21, top)
-  // The shading covers 0 to just past the highest rating in use (at least 3).
-  const colorTop = Math.max(3, top)
+  const rangeTarget = colorRange(used)
+  const colorTop = useTween(rangeTarget)
+  const scaleTop = Math.max(21, top, rangeTarget)
   const step = niceStep(scaleTop)
   const domain = Math.ceil(scaleTop / step) * step
 
@@ -379,7 +384,7 @@ export default function ScatterChart({ abilities, highlight, onHighlight, onRate
   return (
     <>
       <div
-        className={`chart${onRate ? ' editable' : ''}${onPropose ? ' proposing' : ''}${onPick ? ' pickable' : ''}${drag?.moved ? ' dragging' : ''}${zoomed ? ' zoomed' : ''}`}
+        className={`chart${entering ? ' entering' : ''}${onRate ? ' editable' : ''}${onPropose ? ' proposing' : ''}${onPick ? ' pickable' : ''}${drag?.moved ? ' dragging' : ''}${zoomed ? ' zoomed' : ''}`}
         ref={boxRef}
         // Zoomed in, one finger moves around the chart; otherwise it scrolls the page.
         style={{ touchAction: zoomed ? 'none' : 'pan-y' }}
@@ -434,9 +439,8 @@ export default function ScatterChart({ abilities, highlight, onHighlight, onRate
             }}
           />
           <g clipPath="url(#ev-plot)">
-            {/* The shading is placed in rating units, so it moves with the zoom. */}
-            {/* The shading is sized to the ratings in use (up to the next Fibonacci
-                step), so a chart of small ratings is coloured around them. */}
+            {/* The shading is placed in rating units, so it moves with the zoom, and
+                sized to the ratings in use, so small ratings are coloured around them. */}
             {['ev-good', 'ev-bet', 'ev-bad'].map((id) => (
               <rect key={id} x={x(0)} y={y(domain)} width={x(domain) - x(0)} height={y(0) - y(domain)} fill={`url(#${id})`} pointerEvents="none" />
             ))}
@@ -491,9 +495,10 @@ export default function ScatterChart({ abilities, highlight, onHighlight, onRate
             return <line key={g.key} className="leader" x1={cx} y1={cy} x2={tx} y2={ty} />
           })}
 
-          {groups.map((g) => (
+          {groups.map((g, i) => (
             <g
               key={g.key}
+              style={{ '--i': i } as React.CSSProperties}
               className={`marker${g.items.some((a) => a.id === highlight) ? ' hot' : ''}${drag?.moved && g.items.every((a) => drag.ids.includes(a.id)) ? ' lifting' : ''}`}
             >
               <circle

@@ -7,6 +7,7 @@ import PrototypesPage from './pages/PrototypesPage'
 import ToolsPage from './pages/ToolsPage'
 import Welcome from './pages/Welcome'
 import UpdatePrompt from './components/UpdatePrompt'
+import { usePresenceBeat } from './presence'
 import { SessionContext, useLocalState, useStoredSession } from './session'
 import { patch, syncMode, useCollection, useSyncStatus } from './sync/store'
 import { PROTOTYPE_GROUP } from './types'
@@ -39,6 +40,8 @@ export default function App() {
   const [status, error] = useSyncStatus()
   const [barHidden, setBarHidden] = useLocalState('kickoff.topbarHidden', false)
   const page = PAGES.find((p) => p.path === route[0]) ?? PAGES[0]
+
+  usePresenceBeat(session, page.path)
 
   useEffect(() => {
     document.title = `${page.label} · Kick-Office`

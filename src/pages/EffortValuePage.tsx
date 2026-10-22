@@ -4,15 +4,18 @@ import { CSS } from '@dnd-kit/utilities'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import ConfirmButton from '../components/ConfirmButton'
 import FibInput from '../components/FibInput'
+import MergeBurst, { MERGE_MS } from '../components/MergeBurst'
 import ScatterChart from '../components/ScatterChart'
+import TeamBoard from '../components/TeamBoard'
 import { FIB } from '../fib'
 import { followPointer } from '../drag'
 import { useLiveSort } from '../liveSort'
+import { deviceId, useOnline } from '../presence'
 import { formatRatio, ratioTone, valuePerEffort } from '../ratio'
 import { cardsFirst, useCardSensors } from '../reorder'
 import { useIsPresenter, useLocalState, useSession } from '../session'
 import { patch, put, remove, useCollection } from '../sync/store'
-import { newId, type Ability, type Proposal } from '../types'
+import { newId, type Ability, type EvSplit, type Presence, type Proposal, type Team, type TeamMember } from '../types'
 
 /** How many suggestions can wait for the presenter at once. */
 const QUEUE_MAX = 3
@@ -24,6 +27,9 @@ const ratioClass = (a: Ability) => `ratio ${ratioTone(valuePerEffort(a.effort, a
 /** An ability's ratings at some moment, for undo. */
 type Rating = { id: string; effort: number | null; value: number | null }
 const UNDO_LIMIT = 100
+
+const TEAMS: Team[] = ['effort', 'value']
+const teamName = (t: Team) => (t === 'effort' ? 'Effort' : 'Value')
 
 const rating = (e: number | null, v: number | null) => (e == null || v == null ? 'not rated' : `E${e} · V${v}`)
 
@@ -58,6 +64,57 @@ export default function EffortValuePage() {
     [proposals, byId],
   )
   const queueFull = queue.length >= QUEUE_MAX
+
+  // Split into teams: each team rates only its own number, kept apart from the
+  // abilities' ratings until the presenter merges them back together.
+  const split = useCollection('evSplit').find((d) => d.id === 'state')
+  const members = useCollection('teamMembers')
+  const teamRatings = useCollection('teamRatings')
+  const online = useOnline('effort-value')
+  const splitOn = !!split?.active
+  const myId = deviceId()
+  const myTeam = members.find((m) => m.id === myId)?.team
+  const isEditor = !!split?.editors.includes(myId)
+  const teamRatingById = useMemo(() => new Map(teamRatings.map((r) => [r.id, r])), [teamRatings])
+  /** A team's rating for an ability, starting from the ability's own. */
+  const teamValue = (team: Team, a: Ability) => {
+    const r = teamRatingById.get(`${team}:${a.id}`)
+    return r ? r.rating : a[team]
+  }
+  const rateTeam = (team: Team, abilityId: string, value: number | null) =>
+    put('teamRatings', { id: `${team}:${abilityId}`, abilityId, team, rating: value })
+  // What the list shows: while split, each column is that team's rating.
+  const shown = useMemo(
+    () => (splitOn ? sorted.map((a) => ({ ...a, effort: teamValue('effort', a), value: teamValue('value', a) })) : sorted),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [splitOn, sorted, teamRatingById],
+  )
+  const shownById = useMemo(() => new Map(shown.map((a) => [a.id, a])), [shown])
+
+  const startSplit = () => {
+    teamRatings.forEach((r) => remove('teamRatings', r.id))
+    members.forEach((m) => remove('teamMembers', m.id))
+    put('evSplit', { id: 'state', active: true, editors: split?.editors ?? [], startedAt: Date.now(), mergedAt: split?.mergedAt })
+    setProposing(null)
+  }
+  const joinTeam = (team: Team) => put('teamMembers', { id: myId, name: me, team, joinedAt: Date.now() })
+  const toggleEditor = (id: string) =>
+    split && patch('evSplit', 'state', { editors: split.editors.includes(id) ? split.editors.filter((e) => e !== id) : [...split.editors, id] })
+
+  // Everyone's screen plays the merge when the split ends while they watch.
+  const wasSplit = useRef(false)
+  const [burst, setBurst] = useState(false)
+  const [entering, setEntering] = useState(false)
+  useEffect(() => {
+    if (splitOn) wasSplit.current = true
+    else if (wasSplit.current) {
+      wasSplit.current = false
+      setBurst(true)
+      setEntering(true)
+      const timer = setTimeout(() => setEntering(false), MERGE_MS + 1200)
+      return () => clearTimeout(timer)
+    }
+  }, [splitOn])
 
   // Presenter: the suggestion being reviewed, with any edits to its numbers.
   const [reviewing, setReviewing] = useState<{ id: string; effort: number | null; value: number | null } | null>(null)
@@ -102,8 +159,16 @@ export default function EffortValuePage() {
   }
   const undo = () => step(undoRef, redoRef)
   const redo = () => step(redoRef, undoRef)
+
+  /** Writes both teams' ratings into the abilities (undoable) and ends the split. */
+  const merge = () => {
+    rate(shown.flatMap((a) => (a.effort === byId.get(a.id)?.effort && a.value === byId.get(a.id)?.value ? [] : [{ id: a.id, effort: a.effort, value: a.value }])))
+    teamRatings.forEach((r) => remove('teamRatings', r.id))
+    members.forEach((m) => remove('teamMembers', m.id))
+    if (split) put('evSplit', { ...split, active: false, mergedAt: Date.now() })
+  }
   useEffect(() => {
-    if (!presenter) return
+    if (!presenter || splitOn) return
     const onKey = (e: KeyboardEvent) => {
       // Typing in a box keeps the box's own undo.
       if (!(e.metaKey || e.ctrlKey) || (e.target as HTMLElement).closest('input, textarea, select')) return
@@ -122,7 +187,7 @@ export default function EffortValuePage() {
 
   const startProposal = (id: string) => {
     const a = byId.get(id)
-    if (!a || presenter) return
+    if (!a || presenter || splitOn) return
     setProposing((p) => (p?.abilityId === id ? null : { abilityId: id, effort: a.effort, value: a.value }))
   }
 
@@ -176,6 +241,93 @@ export default function EffortValuePage() {
 
   const myPending = (abilityId: string) => queue.find((p) => p.abilityId === abilityId && p.author === me)
 
+  const mergeOverlay = burst && <MergeBurst onDone={() => setBurst(false)} />
+
+  if (!presenter && splitOn && !myTeam)
+    return (
+      <div className="ev-page team-pick">
+        <div className="team-pick-inner">
+          <h2>Pick your team</h2>
+          <p className="muted">
+            The presenter split Effort / Value into two teams. Each team rates just one number for every ability. Once you join a team you stay on it;
+            only the presenter can move you.
+          </p>
+          <div className="team-pick-options">
+            {TEAMS.map((t) => (
+              <ConfirmButton key={t} className={`team-option ${t}`} onConfirm={() => joinTeam(t)} confirmLabel={<span className="team-option-confirm">Click again to join {teamName(t)}</span>}>
+                <span className="team-option-name">{teamName(t)}</span>
+                <span className="team-option-hint">{t === 'effort' ? 'How hard is each ability to build?' : 'How much is each ability worth in a match?'}</span>
+                <span className="team-option-count">{members.filter((m) => m.team === t).length} joined</span>
+              </ConfirmButton>
+            ))}
+          </div>
+        </div>
+      </div>
+    )
+
+  if (!presenter && splitOn && myTeam)
+    return (
+      <div className="ev-page" ref={pageRef} style={{ '--ev-list-w': `${listWidth}px` } as React.CSSProperties}>
+        <section className="ev-list">
+          <div className={`team-banner ${myTeam}`}>
+            <strong>You're on the {teamName(myTeam)} team</strong>
+            <span className="small">
+              {isEditor
+                ? `You're an editor: drag abilities into a column, or use the boxes, to rate their ${myTeam}.`
+                : `Rate only ${myTeam}. You're watching for now; the presenter can make you an editor.`}
+            </span>
+            <span className="muted small">Locked in: only the presenter can move you to the other team.</span>
+          </div>
+          <div className="ability-table" role="table">
+            <div className="ability-row head solo" role="row">
+              <span role="columnheader">Ability</span>
+              <span role="columnheader" className="h-num">
+                {teamName(myTeam)}
+              </span>
+            </div>
+            {sorted.length === 0 && <p className="empty muted">No abilities yet.</p>}
+            {sorted.map((a) => (
+              <div
+                key={a.id}
+                role="row"
+                className={`ability-row solo${highlight === a.id ? ' hot' : ''}`}
+                onPointerEnter={() => setHighlight(a.id)}
+                onPointerLeave={() => setHighlight(null)}
+              >
+                <span className="ability-name" role="cell">
+                  {a.name}
+                </span>
+                {isEditor ? (
+                  <FibInput label={teamName(myTeam)} value={teamValue(myTeam, a)} onChange={(v) => rateTeam(myTeam, a.id, v)} />
+                ) : (
+                  <span className="score" role="cell">
+                    {teamValue(myTeam, a) ?? '–'}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+        <div
+          className="side-resize ev-resize"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize the abilities list"
+          onPointerDown={startResize}
+          onDoubleClick={() => setListWidth(440)}
+        />
+        <section className="ev-chart ev-teams">
+          <TeamBoard
+            team={myTeam}
+            items={sorted.map((a) => ({ id: a.id, name: a.name, rating: teamValue(myTeam, a) }))}
+            onRate={isEditor ? (id, v) => rateTeam(myTeam, id, v) : undefined}
+            highlight={highlight}
+            onHighlight={setHighlight}
+          />
+        </section>
+      </div>
+    )
+
   return (
     <div className="ev-page" ref={pageRef} style={{ '--ev-list-w': `${listWidth}px` } as React.CSSProperties}>
       <section className="ev-list">
@@ -187,6 +339,10 @@ export default function EffortValuePage() {
           Rate effort and value on the Fibonacci scale ({FIB.slice(0, 7).join(', ')}…)
           {presenter ? ', or drag points on the chart.' : '. Click an ability to suggest a rating to the presenter.'}
         </p>
+
+        {presenter && splitOn && split && (
+          <TeamsPanel split={split} members={members} online={online} onToggleEditor={toggleEditor} onUnstick={(id) => remove('teamMembers', id)} onMerge={merge} />
+        )}
 
         {presenter && queue.length > 0 && (
           <div className="proposal-queue">
@@ -248,6 +404,11 @@ export default function EffortValuePage() {
                 Add
               </button>
             </form>
+            {!splitOn && (
+              <button onClick={startSplit} title="Split everyone into an Effort team and a Value team, each rating one number">
+                Split into teams
+              </button>
+            )}
             <select value="" onChange={(e) => e.target.value && sortBy(e.target.value as SortKey)} aria-label="Sort the list" disabled={sorted.length < 2}>
               <option value="">Sort list…</option>
               {SORTS.map((s) => (
@@ -283,8 +444,16 @@ export default function EffortValuePage() {
               <p className="empty muted">{presenter ? 'Add everything a robot could do this season.' : 'No abilities yet.'}</p>
             )}
             <SortableContext items={live.items('abilities')} strategy={verticalListSortingStrategy}>
-            {live.items('abilities').map((id) => byId.get(id)!).map((a) => (
-              <AbilityRow key={a.id} ability={a} presenter={presenter} onRate={(r) => rate([{ id: a.id, effort: a.effort, value: a.value, ...r }])} hot={highlight === a.id || focusId === a.id} onHot={setHighlight} onPick={() => startProposal(a.id)}>
+            {live.items('abilities').map((id) => shownById.get(id)!).map((a) => (
+              <AbilityRow
+                key={a.id}
+                ability={a}
+                presenter={presenter}
+                onRate={(r) =>
+                  splitOn
+                    ? (Object.keys(r) as Team[]).forEach((t) => rateTeam(t, a.id, r[t] ?? null))
+                    : rate([{ id: a.id, effort: a.effort, value: a.value, ...r }])
+                } hot={highlight === a.id || focusId === a.id} onHot={setHighlight} onPick={() => startProposal(a.id)}>
                 {!presenter && proposing?.abilityId === a.id && (
                   <div className="proposal-review mine">
                     {myPending(a.id) ? (
@@ -344,8 +513,23 @@ export default function EffortValuePage() {
         }}
       />
 
+      {splitOn ? (
+        <section className="ev-chart ev-teams">
+          {TEAMS.map((t) => (
+            <TeamBoard
+              key={t}
+              team={t}
+              items={shown.map((a) => ({ id: a.id, name: a.name, rating: a[t] }))}
+              onRate={presenter ? (id, v) => rateTeam(t, id, v) : undefined}
+              highlight={highlight}
+              onHighlight={setHighlight}
+            />
+          ))}
+        </section>
+      ) : (
       <section className="ev-chart">
         <ScatterChart
+          entering={entering}
           abilities={sorted}
           highlight={highlight ?? focusId}
           onHighlight={setHighlight}
@@ -356,6 +540,87 @@ export default function EffortValuePage() {
           onPick={presenter ? undefined : startProposal}
         />
       </section>
+      )}
+      {mergeOverlay}
+    </div>
+  )
+}
+
+/** The presenter's view of the teams: who is on each, who may edit, and merging. */
+function TeamsPanel({
+  split,
+  members,
+  online,
+  onToggleEditor,
+  onUnstick,
+  onMerge,
+}: {
+  split: EvSplit
+  members: TeamMember[]
+  online: Presence[]
+  onToggleEditor: (id: string) => void
+  onUnstick: (id: string) => void
+  onMerge: () => void
+}) {
+  const [choosing, setChoosing] = useState(false)
+  const here = new Set(online.map((p) => p.id))
+  // Standard viewers on this screen now, plus editors who have since left.
+  const people = [
+    ...online.filter((p) => p.role === 'standard').map((p) => ({ id: p.id, name: p.name })),
+    ...members.filter((m) => !here.has(m.id) && split.editors.includes(m.id)),
+  ]
+  const choosingTeam = online.filter((p) => p.role === 'standard' && !members.some((m) => m.id === p.id))
+  return (
+    <div className="teams-panel">
+      <h3>
+        Teams <span className="count-pill">{members.length} joined</span>
+      </h3>
+      <div className="teams-cols">
+        {TEAMS.map((t) => (
+          <div key={t} className={`team-list ${t}`}>
+            <h4>{teamName(t)} team</h4>
+            {members.filter((m) => m.team === t).length === 0 && <p className="muted small">No one yet.</p>}
+            {members
+              .filter((m) => m.team === t)
+              .sort((a, b) => a.name.localeCompare(b.name))
+              .map((m) => (
+                <div key={m.id} className="team-member">
+                  <span className={`presence-dot${here.has(m.id) ? ' on' : ''}`} title={here.has(m.id) ? 'On this screen' : 'Not on this screen'} />
+                  <span className="team-member-name">{m.name}</span>
+                  {split.editors.includes(m.id) && <span className="editor-badge">Editor</span>}
+                  <button className="link small" onClick={() => onUnstick(m.id)} title="Take them off this team so they can choose again">
+                    Unstick
+                  </button>
+                </div>
+              ))}
+          </div>
+        ))}
+      </div>
+      {choosingTeam.length > 0 && <p className="muted small">Still choosing: {choosingTeam.map((p) => p.name).join(', ')}</p>}
+      <div className="row teams-actions">
+        <button onClick={() => setChoosing((c) => !c)} aria-expanded={choosing}>
+          Editors… <span className="count-pill">{split.editors.length}</span>
+        </button>
+        <ConfirmButton className="primary merge-btn" onConfirm={onMerge} confirmLabel="Click again to merge">
+          Merge everyone
+        </ConfirmButton>
+      </div>
+      {choosing && (
+        <div className="editor-picker">
+          <p className="muted small">People on this screen now. Editors can change their own team's ratings.</p>
+          {people.length === 0 && <p className="muted small">No one else is on the Effort / Value screen right now.</p>}
+          {people.map((p) => {
+            const m = members.find((x) => x.id === p.id)
+            return (
+              <label key={p.id} className="editor-option">
+                <input type="checkbox" checked={split.editors.includes(p.id)} onChange={() => onToggleEditor(p.id)} />
+                <span className="team-member-name">{p.name}</span>
+                <span className="muted small">{m ? `${teamName(m.team)} team` : 'choosing a team'}</span>
+              </label>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
